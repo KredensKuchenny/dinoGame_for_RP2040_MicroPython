@@ -1,3 +1,4 @@
+import time
 from machine import Pin, I2C
 from games.dino.dino import Dino
 from games.dino.cacti import Cacti
@@ -8,40 +9,54 @@ import display.ssd1306 as ssd1306
 is_interrupt = False
 start_game = False
 game_over = False
-first_jump = True
-oled_widht = 128
+oled_width = 128
 oled_height = 64
+
+GAP = 80
+
+DEBOUNCE_MS = 200
+last_irq = 0
+
+
+GRACE_MS = 100
+game_start_time = 0
 
 
 def handle_interrupt(pin):
     global is_interrupt
     global start_game
     global game_over
+    global last_irq
+    global game_start_time
+
+    now = time.ticks_ms()
+    if time.ticks_diff(now, last_irq) < DEBOUNCE_MS:
+        return
+    last_irq = now
 
     if game_over:
         game_over = False
-
-    if start_game:
-        is_interrupt = True
-
-    if not game_over:
+    elif start_game:
+        if time.ticks_diff(now, game_start_time) >= GRACE_MS:
+            is_interrupt = True
+    else:
         start_game = True
+        game_start_time = now
 
 
 button = Pin(2, mode=Pin.IN, pull=Pin.PULL_UP)
 button.irq(trigger=Pin.IRQ_FALLING, handler=handle_interrupt)
 
 i2c = I2C(1, sda=Pin(6), scl=Pin(7))
-display = ssd1306.SSD1306_I2C(oled_widht, oled_height, i2c)
+display = ssd1306.SSD1306_I2C(oled_width, oled_height, i2c)
 
 dino_obj = Dino(26, 26, 7, 38, 128)
 cloud_obj = Cloud(32, 9, 48, 11, 128, 10)
-cacti_obj_1 = Cacti(10, 24, 10, 18, 128, 39, 45, 20)
-cacti_obj_2 = Cacti(10, 24, 10, 18, 128, 39, 45, 20)
+cacti_obj_1 = Cacti(10, 24, 10, 18, 128, 39, 45)
+cacti_obj_2 = Cacti(10, 24, 10, 18, 128, 39, 45, start_x=128 + GAP)
+cacti_list = [cacti_obj_1, cacti_obj_2]
 checker_obj = Checker()
 
-
-second_cacti = False
 
 while True:
     display.fill(0)
@@ -53,8 +68,6 @@ while True:
         dino_obj.game_over(display)
         is_interrupt = False
         start_game = False
-        second_cacti = False
-        first_jump = True
         score = 0
         dino_obj.reset()
         cacti_obj_1.reset()
@@ -64,53 +77,32 @@ while True:
         display.text("DINO RUN", 32, 20, 1)
         dino_obj.game_logo(display)
         is_interrupt = False
-        second_cacti = False
     else:
-        if first_jump:
-            is_interrupt = False
-            first_jump = False
-
         display.hline(0, 59, 127, 1)
 
-        trigger_info = False
+        for cacti_obj in cacti_list:
+            cacti_obj.update(display)
 
-        trigger_info = cacti_obj_1.update(display)
-
-        if trigger_info:
-            cacti_obj_2.update(display)
-            second_cacti = True
-
-        if second_cacti:
-            if (
-                cacti_obj_2.size == 0
-                and cacti_obj_2.current_x >= -cacti_obj_2.widht_big + 1
-            ):
-                cacti_obj_2.update(display)
-            else:
-                second_cacti == False
-
-            if (
-                cacti_obj_2.size == 1
-                and cacti_obj_2.current_x >= -cacti_obj_2.widht_small + 1
-            ):
-                cacti_obj_2.update(display)
-            else:
-                second_cacti == False
+        for cacti_obj in cacti_list:
+            if cacti_obj.current_x < -cacti_obj.width:
+                furthest = max(c.current_x for c in cacti_list)
+                cacti_obj.respawn(furthest + GAP)
 
         cloud_obj.update(display)
         dino_obj.update(display, 0)
 
         if is_interrupt:
-            dino_obj.update(display, 1)
+            if time.ticks_diff(time.ticks_ms(), game_start_time) >= GRACE_MS:
+                dino_obj.update(display, 1)
             is_interrupt = False
 
-        cacti_obj_1.counter()
-        cacti_obj_2.counter()
+        for cacti_obj in cacti_list:
+            cacti_obj.counter()
 
         score = cacti_obj_1.score + cacti_obj_2.score
 
-        for cacti_obj in [cacti_obj_1, cacti_obj_2]:
-            if cacti_obj.current_x < oled_widht / 1.5:
+        for cacti_obj in cacti_list:
+            if cacti_obj.current_x < oled_width / 1.5:
                 if cacti_obj.size == 0:
                     game_over = checker_obj.check(
                         display,
@@ -118,7 +110,7 @@ while True:
                         dino_obj.height,
                         dino_obj.current_x,
                         dino_obj.current_y,
-                        cacti_obj.widht_big,
+                        cacti_obj.width_big,
                         cacti_obj.height_big,
                         cacti_obj.current_x,
                         cacti_obj.current_y_big,
@@ -130,11 +122,13 @@ while True:
                         dino_obj.height,
                         dino_obj.current_x,
                         dino_obj.current_y,
-                        cacti_obj.widht_small,
+                        cacti_obj.width_small,
                         cacti_obj.height_small,
                         cacti_obj.current_x,
                         cacti_obj.current_y_small,
                     )
+                if game_over:
+                    break
 
         if game_over:
             start_game = False
